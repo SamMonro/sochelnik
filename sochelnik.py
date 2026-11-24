@@ -678,7 +678,7 @@ function guest(s) {
   }
   if (s.phase === 'open') {
     setAccent('positive');
-    center(star + '<p class="eyebrow">Место в списке подтверждено</p><h1 class="display">Ты учавствуешь!</h1>' + quote('<p class="message"><span id="you"></span></p>') + '<p class="lead">Оставь этот экран открытым. Рулетка запустится сама.</p>');
+    center(star + '<p class="eyebrow">Место в списке подтверждено</p><h1 class="display">Ты в розыгрыше</h1>' + quote('<p class="message"><span id="you"></span></p>') + '<p class="lead">Оставь этот экран открытым. Рулетка запустится сама.</p>');
     text('you', s.you);
   } else if (s.phase === 'closed') {
     setAccent('');
@@ -703,9 +703,13 @@ function guest(s) {
 
 function screen(s) {
   setAccent('');
-  if (s.phase === 'open') {
+  if (s.phase === 'open' && s.tunnel === 'starting') {
+    center(tree + '<p class="eyebrow">Зарегистрировано человек: <strong id="count">0</strong></p><h1 class="display">Рождественский розыгрыш</h1>' + orn +
+      '<p class="lead">Готовим интернет-ссылку для гостей. Это займёт несколько секунд…</p>' + screenTools());
+  } else if (s.phase === 'open') {
     center('<p class="eyebrow">Зарегистрировано человек: <strong id="count">0</strong></p><h1 class="display">Рождественский розыгрыш</h1>' +
-      '<p class="lead">Наведи камеру телефона на код</p><div class="qr-frame"><img class="qr" id="qr" alt="QR-код для входа"></div><a class="url" id="address" href="#"></a>' + screenTools());
+      '<p class="lead">Наведи камеру телефона на код</p><div class="qr-frame"><img class="qr" id="qr" alt="QR-код для входа"></div><a class="url" id="address" href="#"></a>' +
+      (s.tunnel === 'failed' ? '<p class="lead">Интернет-ссылка недоступна: гостям нужен тот же Wi-Fi, что и у ведущего.</p>' : '') + screenTools());
     $('qr').src = '/qr.svg?i=' + s.network;
     $('address').href = urlFor(s);
     text('address', urlFor(s));
@@ -735,7 +739,7 @@ function host(s) {
     '<p class="details">Адрес участников: <a id="host-address" href="#" class="url"></a></p>' +
     '<label>Режим сети<select id="network"></select></label>' +
     '<p class="details">По умолчанию выбран интернет-туннель. Если интернет на ноутбуке пропадёт — переключись на локальный Wi-Fi (гости должны быть в той же сети).</p>' +
-    '<p class="stat" id="host-status"></p><p id="host-winner" class="message"></p>' +
+    '<p class="details" id="tunnel-status"></p><p class="stat" id="host-status"></p><p id="host-winner" class="message"></p>' +
     '<div class="actions" id="actions"></div><p class="details" id="note"></p><p id="host-error" class="error" hidden></p></div>' +
     '<div class="card"><h2 id="people-title">Участники: 0</h2><p id="empty" class="details">Пока никого нет. Покажи QR-код участникам.</p><ul class="people" id="people"></ul></div></div></div>';
   const network = $('network');
@@ -755,6 +759,12 @@ function host(s) {
     };
     $('actions').append(b);
   }
+  const ts = {off: 'Интернет-туннель отключён (флаг --no-tunnel): гости заходят только через общий Wi-Fi.',
+    starting: 'Интернет-туннель запускается… QR гостям пока не показывай.',
+    ready: 'Интернет-туннель активен: гости заходят со своего мобильного интернета.',
+    failed: 'Туннель не работает: ' + (s.tunnel_msg || '') + ' Гости смогут зайти только через общий Wi-Fi.'};
+  text('tunnel-status', ts[s.tunnel] || '');
+  $('tunnel-status').className = 'details' + (s.tunnel === 'failed' ? ' error' : '');
   text('host-status', phaseNames[s.phase] + (s.round ? ' · Раунд ' + s.round : ''));
   if (s.phase === 'open') add('close', 'Завершить регистрацию', false, !s.count);
   if (s.phase === 'closed') { add('draw', 'Запустить рулетку', false, !s.eligible); add('open', 'Открыть регистрацию снова', true); }
@@ -799,7 +809,7 @@ function advance(now) {
 function update(s, delay = 0) {
   if (state && s.revision < state.revision) return;
   state = s;
-  const sig = JSON.stringify([s.phase, s.round, s.joined, s.you, s.won, s.prior, s.winner, s.message, s.network, s.urls, role === 'host' ? s.people : null]);
+  const sig = JSON.stringify([s.phase, s.round, s.joined, s.you, s.won, s.prior, s.winner, s.message, s.network, s.urls, s.tunnel, s.tunnel_msg, role === 'host' ? s.people : null]);
   if (signature !== sig) {
     signature = sig;
     cancelAnimationFrame(anim);
@@ -912,6 +922,18 @@ class Game:
         self.network = 0
         self.revision = 0
         self.qr_cache = {}  # url -> svg, кэш из локальной версии
+        self.tunnel = 'off'  # off | starting | ready | failed
+        self.tunnel_msg = ''
+
+    def set_tunnel(self, state, msg=''):
+        with self.lock:
+            self.tunnel, self.tunnel_msg = state, msg
+            self.revision += 1
+
+    def fail_if_starting(self, msg):
+        with self.lock:
+            if self.tunnel == 'starting':
+                self.set_tunnel('failed', msg)
 
     def get_qr(self, url):
         with self.lock:
@@ -939,7 +961,8 @@ class Game:
         person = self.people.get(who)
         out = dict(phase=self.phase, round=self.round, count=len(self.people),
                    joined=bool(person), revision=self.revision,
-                   network=self.network, urls=self.urls)
+                   network=self.network, urls=self.urls,
+                   tunnel=self.tunnel, tunnel_msg=self.tunnel_msg)
         if person:
             out['you'] = ' '.join(person[:2])
         if self.phase == 'spin':
@@ -1200,6 +1223,20 @@ def get_cloudflared_bin():
         urllib.request.urlretrieve(url, bin_path)
         return str(bin_path)
 
+    if system == 'linux':
+        if Path('/data/data/com.termux').exists():
+            return None  # в Termux обычный бинарник не запустится: нужен pkg install cloudflared
+        arch = {'x86_64': 'amd64', 'amd64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64'}.get(machine)
+        if not arch:
+            return None
+        bin_path = app_dir / 'cloudflared'
+        if bin_path.exists(): return str(bin_path)
+        print('Первый запуск: скачиваем cloudflared для Linux...', flush=True)
+        urllib.request.urlretrieve(
+            f'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-{arch}', bin_path)
+        bin_path.chmod(bin_path.stat().st_mode | stat.S_IEXEC)
+        return str(bin_path)
+
     if system == 'darwin':
         bin_path = app_dir / 'cloudflared'
         if bin_path.exists(): return str(bin_path)
@@ -1218,32 +1255,48 @@ def get_cloudflared_bin():
 
 
 def start_tunnel(port, server):
-    """Поднимает cloudflared и, когда появится URL, добавляет его в игру и в allowed_hosts."""
+    """Поднимает cloudflared; когда появится URL, добавляет его в игру и в allowed_hosts.
+    Вывод cloudflared читаем до конца: если перестать читать, буфер пайпа заполнится
+    и туннель зависнет посреди праздника."""
+    game = server.game
+    ignored = {'api.trycloudflare.com', 'www.trycloudflare.com', 'trycloudflare.com'}
+    tail = collections.deque(maxlen=4)
+    found = False
     try:
         bin_path = get_cloudflared_bin()
         if not bin_path:
-            print('cloudflared не найден — работаем в режиме локального Wi-Fi.\n', flush=True)
+            msg = 'cloudflared не найден. В Termux: pkg install cloudflared'
+            print(msg + ' — работаем только через Wi-Fi.\n', flush=True)
+            game.set_tunnel('failed', msg)
             return
+        threading.Timer(45, game.fail_if_starting,
+                        args=('Ссылка не получена за 45 секунд. Проверь интернет на этом устройстве.',)).start()
         proc = subprocess.Popen(
-            [bin_path, 'tunnel', '--url', f'http://127.0.0.1:{port}'],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            [bin_path, '--no-autoupdate', 'tunnel', '--protocol', 'http2', '--url', f'http://127.0.0.1:{port}'],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, errors='replace',
         )
-        IGNORED_HOSTS = {'api.trycloudflare.com', 'www.trycloudflare.com', 'trycloudflare.com'}
         for line in proc.stdout:
+            tail.append(line.strip())
+            if found:
+                continue
             match = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
-            if match:
-                candidate = match.group(0)
-                host = urlsplit(candidate).hostname or ''
-                if host in IGNORED_HOSTS:
-                    continue
-                public_url = candidate + '/join'
-                added = server.game.add_tunnel_url(public_url)
-                if added:
-                    server.allowed_hosts.add(urlsplit(public_url).netloc)
-                    print(f'Интернет-туннель активен! Ссылка для гостей: {public_url}\n', flush=True)
-                break
+            if match and (urlsplit(match.group(0)).hostname or '') not in ignored:
+                public_url = match.group(0) + '/join'
+                server.allowed_hosts.add(urlsplit(public_url).netloc)
+                game.add_tunnel_url(public_url)
+                game.set_tunnel('ready')
+                found = True
+                print(f'Интернет-туннель активен! Ссылка для гостей: {public_url}\n', flush=True)
+        reason = ' | '.join(t for t in tail if t)[-220:]
+        if found:
+            game.set_tunnel('failed', 'Туннель оборвался. Перезапусти программу.')
+        else:
+            game.set_tunnel('failed', 'cloudflared завершился без ссылки. ' + reason)
+        print(f'Туннель остановился. {reason}\n', flush=True)
     except Exception as e:
+        game.set_tunnel('failed', f'Не удалось запустить туннель: {e}')
         print(f'Не удалось запустить интернет-туннель (работаем в режиме Wi-Fi): {e}\n', flush=True)
+
 
 def main():
     parser = argparse.ArgumentParser(description='Сочельник 2026 — розыгрыш с туннелем и Wi-Fi fallback.')
@@ -1274,6 +1327,7 @@ def main():
 
     if not args.no_tunnel:
         print('Запускаю интернет-туннель (5–10 сек на первый раз)...', flush=True)
+        server.game.set_tunnel('starting')
         threading.Thread(target=start_tunnel, args=(port, server), daemon=True).start()
     else:
         print('Туннель отключён флагом --no-tunnel. Гости должны быть в той же Wi-Fi.\n', flush=True)
