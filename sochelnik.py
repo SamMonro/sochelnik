@@ -678,7 +678,7 @@ function guest(s) {
   }
   if (s.phase === 'open') {
     setAccent('positive');
-    center(star + '<p class="eyebrow">Место в списке подтверждено</p><h1 class="display">Ты в розыгрыше</h1>' + quote('<p class="message"><span id="you"></span></p>') + '<p class="lead">Оставь этот экран открытым. Рулетка запустится сама.</p>');
+    center(star + '<p class="eyebrow">Место в списке подтверждено</p><h1 class="display">Ты учавствуешь!</h1>' + quote('<p class="message"><span id="you"></span></p>') + '<p class="lead">Оставь этот экран открытым. Рулетка запустится сама.</p>');
     text('you', s.you);
   } else if (s.phase === 'closed') {
     setAccent('');
